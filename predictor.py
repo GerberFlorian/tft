@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from darts import TimeSeries, concatenate
 from darts.dataprocessing.transformers import Scaler, StaticCovariatesTransformer
+from darts.explainability import TFTExplainer
 from darts.models import TFTModel, CatBoostModel
 from darts.utils.likelihood_models import QuantileRegression
 
@@ -151,7 +152,7 @@ class Model:
                 random_state=23,
                 use_static_covariates=True
             )
-
+        """
         if model_name == "CatBoost":
             self.model = CatBoostModel(
                 lags=self.input_chunk_length,
@@ -159,7 +160,7 @@ class Model:
                 lags_future_covariates=None,
                 output_chunk_length=self.forecast_horizon
             )
-
+        """
     def transform(self):
 
         target_series_list = self.preprocessor.target_series_list
@@ -305,6 +306,13 @@ if __name__ == '__main__':
     prediction_df = pd.concat([groups_df, prediction_df], axis=1)
 
     print(prediction_df)
+
+    if model.model_name == "TFT":
+        explainer = TFTExplainer(model.model)
+        results = explainer.explain()
+        # plot the results
+        explainer.plot_attention(results, plot_type="all")
+        explainer.plot_variable_selection(results)
 
 
 
