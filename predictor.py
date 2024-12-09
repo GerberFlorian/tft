@@ -12,11 +12,12 @@ from typing import Union, Optional
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import torch
 from darts import TimeSeries, concatenate
 from darts.dataprocessing.transformers import Scaler, StaticCovariatesTransformer
-from darts.explainability import TFTExplainer
-from darts.models import TFTModel, CatBoostModel
+from darts.models import TFTModel
 from darts.utils.likelihood_models import QuantileRegression
+from pytorch_lightning.callbacks import EarlyStopping
 
 warnings.filterwarnings("ignore")
 
@@ -103,12 +104,16 @@ class Model:
         self.train_past_cov_transformed = None
         self.val_past_cov_transformed = None
 
-        self.input_chunk_length = 3
+        self.input_chunk_length = 5
         self.forecast_horizon = 2
 
         self.train_target_scaler = None
         self.train_past_cov_scaler = None
         self.train_static_transformer = None
+
+        early_stopper = EarlyStopping("val_loss", min_delta=0.001, patience=10, verbose=True)
+
+        self.callbacks=[early_stopper]
 
         if model_name == "TFT":
             # before starting, we define some constants
@@ -136,13 +141,12 @@ class Model:
             self.model = TFTModel(
                 input_chunk_length=self.input_chunk_length,
                 output_chunk_length=self.forecast_horizon,
-                optimizer_kwargs={'lr': 1e-4},
                 hidden_size=64,
                 lstm_layers=1,
                 num_attention_heads=4,
                 dropout=0.1,
-                batch_size=16,
-                n_epochs=1,
+                batch_size=32,
+                n_epochs=100,
                 add_relative_index=True,
                 add_encoders=None,
                 likelihood=QuantileRegression(
@@ -150,17 +154,17 @@ class Model:
                 ),  # QuantileRegression is set per default
                 # loss_fn=MSELoss(),
                 random_state=23,
-                use_static_covariates=True
+                use_static_covariates=True,
+                pl_trainer_kwargs={
+                    "accelerator": "gpu",
+                    "devices": [0],
+                    "callbacks": self.callbacks
+                },
+                model_name=model_name,
+                save_checkpoints=True,
+                force_reset=True
             )
-        """
-        if model_name == "CatBoost":
-            self.model = CatBoostModel(
-                lags=self.input_chunk_length,
-                lags_past_covariates=self.input_chunk_length,
-                lags_future_covariates=None,
-                output_chunk_length=self.forecast_horizon
-            )
-        """
+
     def transform(self):
 
         target_series_list = self.preprocessor.target_series_list
@@ -243,8 +247,11 @@ class Model:
         return result_df
 
 
+    def load_from_checkpoint(self):
+        self.model = TFTModel.load_from_checkpoint(self.model_name, best=True)
+
     def save(self, directory: str):
-        self.model.save()
+        self.model.save(directory)
 
     def load(self, directory: str):
         pass
@@ -274,8 +281,8 @@ def PlotChart(df):
     plt.show()
 
 # Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    print("Hier")
+def preprocess_and_train():
+    torch.set_float32_matmul_precision('medium')
     station_snow_df = MergeCSV()
 
 
@@ -295,6 +302,10 @@ if __name__ == '__main__':
     model.transform()
     print(model.train_target_transformed[0].static_covariates)
     model.fit()
+
+
+    model.load_from_checkpoint()
+
     predictions_list = model.predict(1, model.train_target_transformed, model.train_past_cov_transformed)
 
     predictions_list = model.train_target_scaler.inverse_transform(predictions_list)
@@ -307,12 +318,4 @@ if __name__ == '__main__':
 
     print(prediction_df)
 
-    if model.model_name == "TFT":
-        explainer = TFTExplainer(model.model)
-        results = explainer.explain()
-        # plot the results
-        explainer.plot_attention(results, plot_type="all")
-        explainer.plot_variable_selection(results)
-
-
-
+    model.save("model/tft.pt")
